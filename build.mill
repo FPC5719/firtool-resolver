@@ -9,14 +9,17 @@ import mill.scalalib.PublishModule.checkSonatypeCreds
 import mill.api.{Result}
 import $ivy.`de.tototec::de.tobiasroeser.mill.vcs.version::0.4.0`
 import de.tobiasroeser.mill.vcs.version.VcsVersion
-import com.lumidion.sonatype.central.client.core.{PublishingType, SonatypeCredentials}
+import com.lumidion.sonatype.central.client.core.{
+  PublishingType,
+  SonatypeCredentials
+}
 
 case class Platform(os: String, arch: String) {
   override def toString: String = s"$os-$arch"
   // CIRCT release artifacts use "arm64" but FNDDS uses "aarch64"
   def circtArtifactName: String = (os, arch) match {
     case ("macos", "aarch64") => "macos-arm64"
-    case _ => this.toString
+    case _                    => this.toString
   }
 }
 object Platform {
@@ -30,7 +33,11 @@ trait ChipsAlliancePublishModule extends SonatypeCentralPublishModule {
   def isSnapshot: T[Boolean]
 
   protected def getEnvVariable(name: String): String =
-    sys.env.get(name).getOrElse(throw new Exception(s"Environment variable $name must be defined!"))
+    sys.env
+      .get(name)
+      .getOrElse(
+        throw new Exception(s"Environment variable $name must be defined!")
+      )
 
   def gpgArgs: Seq[String] = Seq(
     "--detach-sign",
@@ -78,10 +85,15 @@ trait ChipsAlliancePublishModule extends SonatypeCentralPublishModule {
       T.workspace,
       T.env,
       awaitTimeout
-    ).publish(artifacts.map { case (a, b) => (a.path, b) }, artifactInfo, publishingType)
+    ).publish(
+      artifacts.map { case (a, b) => (a.path, b) },
+      artifactInfo,
+      publishingType
+    )
   }
 }
 
+/*
 // Must run mill with -i because it uses environment variables:
 // LLVM_FIRTOOL_VERSION - (eg. 1.144.0)
 // LLVM_FIRTOOL_PRERELEASE - 0 means real release (non-SNAPSHOT), otherwise is -SNAPSHOT
@@ -101,7 +113,8 @@ object `llvm-firtool` extends JavaModule with ChipsAlliancePublishModule {
   // artifactId is the the name of this object
   private def artId = "llvm-firtool"
   private def binName = "firtool"
-  private def releaseUrl = s"https://github.com/llvm/circt/releases/download/firtool-${firtoolVersion}"
+  private def releaseUrl =
+    s"https://github.com/llvm/circt/releases/download/firtool-${firtoolVersion}"
 
   val platforms = Seq[Platform](
     Platform("macos", "x64"),
@@ -220,9 +233,12 @@ object `llvm-firtool` extends JavaModule with ChipsAlliancePublishModule {
   }
 
   def localClasspath = T {
-    super.localClasspath() ++ extractedDirs().map { case (_, dir) => dir } ++ Seq(fnddsMetadata())
+    super.localClasspath() ++ extractedDirs().map { case (_, dir) =>
+      dir
+    } ++ Seq(fnddsMetadata())
   }
 }
+ */
 
 // firtool-resolver is a shell project (no source files) that wraps an inner core project
 // The core project is assembled (with dependencies like the scala standard lbirary removed)
@@ -232,7 +248,8 @@ object `llvm-firtool` extends JavaModule with ChipsAlliancePublishModule {
 // This is extremely manual and changing dependencies IN ANY WAY (including bumping version)
 // requires carefully checking the packages to shade and dynamic ivy deps in the outer project
 object `firtool-resolver` extends Cross[FirtoolResolver]("2.13", "2.12")
-trait FirtoolResolver extends CrossScalaModule with ChipsAlliancePublishModule { root =>
+trait FirtoolResolver extends CrossScalaModule with ChipsAlliancePublishModule {
+  root =>
 
   override def crossScalaVersion = Map(
     "2.13" -> "2.13.11",
@@ -241,7 +258,8 @@ trait FirtoolResolver extends CrossScalaModule with ChipsAlliancePublishModule {
 
   def scalacOptions = Seq("-deprecation", "-feature", "-release:8")
 
-  def publishVersion = VcsVersion.vcsState().format(countSep = "+", untaggedSuffix = "-SNAPSHOT")
+  def publishVersion =
+    VcsVersion.vcsState().format(countSep = "+", untaggedSuffix = "-SNAPSHOT")
 
   def isSnapshot = T { publishVersion().endsWith("-SNAPSHOT") }
 
@@ -292,7 +310,7 @@ trait FirtoolResolver extends CrossScalaModule with ChipsAlliancePublishModule {
     // getting System property os.name
     def ivyDeps = Agg(
       ivy"dev.dirs:directories:26",
-      ivy"io.get-coursier::coursier:2.1.8",
+      ivy"io.get-coursier::coursier:2.1.8"
     )
 
     // Modify the classpath to remove things we want to dynamically link (Scala jars).
@@ -324,12 +342,12 @@ trait FirtoolResolver extends CrossScalaModule with ChipsAlliancePublishModule {
       "com.github.luben.zstd",
       "org.apache.xbean",
       "org.fusesource.jansi",
-      "org.fusesource.hawtjni",
+      "org.fusesource.hawtjni"
     )
 
     override def assemblyRules =
       Seq(
-        Rule.ExcludePattern("META-INF/.*"),
+        Rule.ExcludePattern("META-INF/.*")
       ) ++ packagesToShade.map(p =>
         Rule.Relocate(s"$p.**", s"firtoolresolver.shaded.$p.@1")
       )

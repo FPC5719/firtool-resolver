@@ -7,8 +7,9 @@ import scala.collection.mutable
 import scala.io.Source
 import java.io.File
 import java.nio.file.{Path, Paths, Files, StandardCopyOption}
-import java.net.URLClassLoader
+import java.net.{HttpURLConnection, URI, URLClassLoader}
 import scala.sys.process._
+import scala.util.control.NonFatal
 
 import dev.dirs.{BaseDirectories, ProjectDirectories, UserDirectories}
 import coursier._
@@ -22,7 +23,12 @@ final case class FirtoolBinary(path: File, version: String)
   *   - Check for firtool on the CHISEL_FIRTOOL_PATH, note any version mismatch
   *   - Check for firtool in resources, note any version mismtach
   *     - If found, check if already extracted, extract if not
-  *   - If none of the above found, use coursier to fetch firtool and check resources again
+  *   - If none of the above found, use coursier to fetch firtool and check
+  *     resources again
+  *
+  * A version may be followed by an HTTP(S) URL, separated by `@`. In that case,
+  * the version is used as the cache key and the binary is downloaded directly
+  * from the URL.
   */
 object Resolve {
 
@@ -51,10 +57,11 @@ object Resolve {
   private def artId = "llvm-firtool"
   // Returns a fallback platform when a platform's native artifacts may not be available.
   // macOS aarch64 falls back to x64 (via Rosetta) for versions that lack native arm64 artifacts.
-  private def fallbackPlatform(platform: String): Option[String] = platform match {
-    case "macos-aarch64" => Some("macos-x64")
-    case _ => None
-  }
+  private def fallbackPlatform(platform: String): Option[String] =
+    platform match {
+      case "macos-aarch64" => Some("macos-x64")
+      case _               => None
+    }
   private def determinePlatform(logger: Logger): Either[String, String] =
     for {
       os <- operatingSystem
@@ -64,7 +71,10 @@ object Resolve {
   private val VersionRegex = """^CIRCT firtool-(\S+)$""".r
 
   private def cacheDir: String = {
-    val path = sys.env.getOrElse("CHISEL_FIRTOOL_CACHE", ProjectDirectories.from("", groupId, artId).cacheDir)
+    val path = sys.env.getOrElse(
+      "CHISEL_FIRTOOL_CACHE",
+      ProjectDirectories.from("", groupId, artId).cacheDir
+    )
     new File(path).getAbsolutePath()
   }
 
@@ -75,13 +85,50 @@ object Resolve {
     destDir.resolve("firtool")
   }
 
+  private sealed trait FirtoolSource
+  private final case class MavenVersion(version: String) extends FirtoolSource
+  private final case class RemoteBinary(version: String, url: URI)
+      extends FirtoolSource
+
+  private def parseFirtoolSource(
+      input: String
+  ): Either[String, FirtoolSource] = {
+    val separator = input.indexOf('@')
+    if (separator < 0) {
+      Right(MavenVersion(input))
+    } else {
+      val version = input.substring(0, separator)
+      val urlText = input.substring(separator + 1)
+      if (version.isEmpty || urlText.isEmpty) {
+        Left(s"Invalid firtool version@URL source: $input")
+      } else {
+        Try(new URI(urlText)).toOption match {
+          case Some(url)
+              if Option(url.getScheme).exists(s =>
+                s.equalsIgnoreCase("http") || s.equalsIgnoreCase("https")
+              ) &&
+                Option(url.getHost).exists(_.nonEmpty) =>
+            Right(RemoteBinary(version, url))
+          case _ =>
+            Left(s"Invalid firtool URL in version@URL source: $urlText")
+        }
+      }
+    }
+  }
+
   // Nested Either is weird but represents unrecoverable vs. recoverable errors
   // Left(...) - unrecoverable error
   // Right(Left(...)) - recoverable error
   // Right(Right(...)) - success
-  private def checkFirtoolPath(logger: Logger): Either[String, Either[String, FirtoolBinary]] = {
-    def Recoverable(msg: String): Either[String, Either[String, FirtoolBinary]] = Right(Left(msg))
-    def Unrecoverable(msg: String): Either[String, Either[String, FirtoolBinary]] = Left(msg)
+  private def checkFirtoolPath(
+      logger: Logger
+  ): Either[String, Either[String, FirtoolBinary]] = {
+    def Recoverable(
+        msg: String
+    ): Either[String, Either[String, FirtoolBinary]] = Right(Left(msg))
+    def Unrecoverable(
+        msg: String
+    ): Either[String, Either[String, FirtoolBinary]] = Left(msg)
 
     logger.debug("Checking CHISEL_FIRTOOL_PATH for firtool")
 
@@ -134,7 +181,10 @@ object Resolve {
     }
   }
 
-  private def checkResources(classloader: Option[URLClassLoader], logger: Logger): Either[String, FirtoolBinary] = {
+  private def checkResources(
+      classloader: Option[URLClassLoader],
+      logger: Logger
+  ): Either[String, FirtoolBinary] = {
     val platform = determinePlatform(logger)
     logger.debug("Checking resources for firtool")
     if (platform.isLeft) {
@@ -157,17 +207,21 @@ object Resolve {
     logger.debug(s"Firtool version $version found in resources")
 
     // Try primary platform then fallback (e.g. macos-aarch64 → macos-x64) if no resource found
-    val platformsToTry = Seq(primaryPlatform) ++ fallbackPlatform(primaryPlatform)
+    val platformsToTry =
+      Seq(primaryPlatform) ++ fallbackPlatform(primaryPlatform)
     val effectivePlatform = platformsToTry.find { p =>
       resourceLoader.getResource(s"$baseDir/$p/bin/firtool") != null
     }
     if (effectivePlatform.isEmpty) {
-      val msg = s"firtool binary not found in resources for platforms: ${platformsToTry.mkString(", ")}"
+      val msg =
+        s"firtool binary not found in resources for platforms: ${platformsToTry.mkString(", ")}"
       logger.debug(msg)
       return Left(msg)
     }
     if (effectivePlatform.get != primaryPlatform) {
-      logger.debug(s"Falling back to ${effectivePlatform.get} resources (no $primaryPlatform resources found)")
+      logger.debug(
+        s"Falling back to ${effectivePlatform.get} resources (no $primaryPlatform resources found)"
+      )
     }
     val artDir = s"$baseDir/${effectivePlatform.get}"
 
@@ -177,47 +231,142 @@ object Resolve {
     // Check if binary already exists
     if (destFile.isFile()) {
       logger.debug(s"Firtool binary $destFile already exists")
-    } else this.synchronized {
-      // Copy
-      // This can be executed by many threads or processes at a time so use atomic move
-      logger.debug(s"Copying firtool from resources to $destFile")
-      val resourceBin = resourceLoader.getResourceAsStream(s"$artDir/bin/firtool")
-      val result = Try {
-        val dir = destBin.getParent
-        Files.createDirectories(dir)
-        // Use temporary file for multi-thread or multi-process safety
-        val tmp = Files.createTempFile(dir, destBin.getFileName.toString, ".tmp")
-        logger.debug(s"Created temporary file $tmp")
-        Files.copy(resourceBin, tmp, StandardCopyOption.REPLACE_EXISTING)
-        // Use java.io.File APIs to support Windows
-        tmp.toFile.setWritable(true)
-        tmp.toFile.setReadable(true)
-        tmp.toFile.setExecutable(true)
-        logger.debug(s"Atomically moving $tmp to $destBin")
-        Files.move(tmp, destBin, StandardCopyOption.ATOMIC_MOVE)
+    } else
+      this.synchronized {
+        // Copy
+        // This can be executed by many threads or processes at a time so use atomic move
+        logger.debug(s"Copying firtool from resources to $destFile")
+        val resourceBin =
+          resourceLoader.getResourceAsStream(s"$artDir/bin/firtool")
+        val result = Try {
+          val dir = destBin.getParent
+          Files.createDirectories(dir)
+          // Use temporary file for multi-thread or multi-process safety
+          val tmp =
+            Files.createTempFile(dir, destBin.getFileName.toString, ".tmp")
+          logger.debug(s"Created temporary file $tmp")
+          Files.copy(resourceBin, tmp, StandardCopyOption.REPLACE_EXISTING)
+          // Use java.io.File APIs to support Windows
+          tmp.toFile.setWritable(true)
+          tmp.toFile.setReadable(true)
+          tmp.toFile.setExecutable(true)
+          logger.debug(s"Atomically moving $tmp to $destBin")
+          Files.move(tmp, destBin, StandardCopyOption.ATOMIC_MOVE)
+        }
+        if (result.isFailure) {
+          val msg = s"Copying firtool failed with ${result.failed.get}"
+          logger.debug(msg)
+          return Left(msg)
+        }
       }
-      if (result.isFailure) {
-        val msg = s"Copying firtool failed with ${result.failed.get}"
-        logger.debug(msg)
-        return Left(msg)
-      }
-    }
     Right(FirtoolBinary(destFile, version))
   }
 
-  private def checkInstalled(logger: Logger, defaultVersion: String): Either[String, FirtoolBinary] = {
+  private def checkInstalled(
+      logger: Logger,
+      defaultVersion: String
+  ): Either[String, FirtoolBinary] = {
     val destFile: File = firtoolBin(defaultVersion).toFile
     if (destFile.isFile) {
-      logger.debug(s"Firtool binary with default version ($defaultVersion) $destFile already exists")
+      logger.debug(
+        s"Firtool binary with default version ($defaultVersion) $destFile already exists"
+      )
       Right(FirtoolBinary(destFile, defaultVersion))
     } else {
-      val msg = s"Firtool binary with default version ($defaultVersion) does not already exist"
+      val msg =
+        s"Firtool binary with default version ($defaultVersion) does not already exist"
       logger.debug(msg)
       Left(msg)
     }
   }
 
-  private def fetchArtifact(logger: Logger, defaultVersion: String): Either[String, FirtoolBinary] = {
+  private def downloadBinary(
+      version: String,
+      url: URI,
+      logger: Logger
+  ): Either[String, FirtoolBinary] = {
+    val destBin = firtoolBin(version)
+    logger.debug(s"Downloading firtool from $url to $destBin")
+
+    var connection: HttpURLConnection = null
+    var tmp: Path = null
+    try {
+      connection = url.toURL.openConnection().asInstanceOf[HttpURLConnection]
+      connection.setInstanceFollowRedirects(true)
+      connection.setConnectTimeout(15000)
+      connection.setReadTimeout(120000)
+      connection.setRequestProperty("User-Agent", "firtool-resolver")
+      connection.setRequestProperty("Accept", "application/octet-stream")
+
+      val status = connection.getResponseCode
+      if (status < 200 || status >= 300) {
+        Left(s"Unable to download firtool from $url: HTTP $status")
+      } else {
+        val dir = destBin.getParent
+        Files.createDirectories(dir)
+        tmp = Files.createTempFile(dir, destBin.getFileName.toString, ".tmp")
+        logger.debug(s"Created temporary file $tmp")
+
+        val input = connection.getInputStream
+        try {
+          Files.copy(input, tmp, StandardCopyOption.REPLACE_EXISTING)
+        } finally {
+          input.close()
+        }
+
+        if (!Files.isRegularFile(tmp) || Files.size(tmp) == 0L) {
+          Left(s"Downloaded firtool from $url is empty")
+        } else {
+          tmp.toFile.setWritable(true)
+          tmp.toFile.setReadable(true)
+          tmp.toFile.setExecutable(true)
+          logger.debug(s"Atomically moving $tmp to $destBin")
+          Files.move(
+            tmp,
+            destBin,
+            StandardCopyOption.ATOMIC_MOVE,
+            StandardCopyOption.REPLACE_EXISTING
+          )
+          tmp = null
+          Right(FirtoolBinary(destBin.toFile, version))
+        }
+      }
+    } catch {
+      case NonFatal(e) =>
+        Left(s"Unable to download firtool from $url: ${e.getMessage}")
+    } finally {
+      if (connection != null) {
+        connection.disconnect()
+      }
+      if (tmp != null) {
+        Try(Files.deleteIfExists(tmp))
+      }
+    }
+  }
+
+  private def resolveRemote(
+      version: String,
+      url: URI,
+      logger: Logger
+  ): Either[String, FirtoolBinary] = {
+    checkFirtoolPath(logger) match {
+      case Left(msg)            => Left(msg)
+      case Right(Right(binary)) => Right(binary)
+      case Right(Left(_))       =>
+        val destFile = firtoolBin(version).toFile
+        if (destFile.isFile) {
+          logger.debug(s"Firtool binary for $url already exists at $destFile")
+          Right(FirtoolBinary(destFile, version))
+        } else {
+          downloadBinary(version, url, logger)
+        }
+    }
+  }
+
+  private def fetchArtifact(
+      logger: Logger,
+      defaultVersion: String
+  ): Either[String, FirtoolBinary] = {
     val platform =
       determinePlatform(logger) match {
         case Left(msg) =>
@@ -236,15 +385,19 @@ object Resolve {
           .withPublication("", Type.empty, Extension.empty, Classifier(p))
       // One would think there'd be a built-in pretty print like this but there isn't
       //   (coursier.util.Print doesn't include the classifier)
-      logger.debug(s"Attempting to fetch ${dep.module}:${dep.version},classifier=${p}")
+      logger.debug(
+        s"Attempting to fetch ${dep.module}:${dep.version},classifier=${p}"
+      )
 
       val resolution = Try {
-        coursier.Fetch()
+        coursier
+          .Fetch()
           .addDependencies(dep)
           .run()
       }
       if (resolution.isFailure) {
-        val msg = resolution.failed.get.toString + "\n" // Coursier's message is already pretty good
+        val msg =
+          resolution.failed.get.toString + "\n" // Coursier's message is already pretty good
         logger.debug(msg)
         return Left(msg)
       }
@@ -259,7 +412,7 @@ object Resolve {
 
     tryFetch(platform) match {
       case right @ Right(_) => right
-      case left @ Left(_) =>
+      case left @ Left(_)   =>
         fallbackPlatform(platform) match {
           case Some(fallback) =>
             logger.debug(s"Falling back to platform $fallback")
@@ -271,36 +424,53 @@ object Resolve {
 
   /** Lookup firtool binary
     *
-    * @param defaultVersion fallback version to fetch if not found in CHISEL_FIRTOOL_PATH nor on classpath
-    * @param verbose print verbose logging information
-    * @return Either an error message or the firtool binary
+    * @param defaultVersion
+    *   version, or a version and HTTP(S) URL separated by `@`
+    * @param verbose
+    *   print verbose logging information
+    * @return
+    *   Either an error message or the firtool binary
     */
-  def apply(defaultVersion: String, verbose: Boolean = false): Either[String, FirtoolBinary] = {
+  def apply(
+      defaultVersion: String,
+      verbose: Boolean = false
+  ): Either[String, FirtoolBinary] = {
     val logger = if (verbose) Logger.debug else Logger.warn
     apply(logger, defaultVersion)
   }
 
-  def apply(logger: Logger, defaultVersion: String): Either[String, FirtoolBinary] = {
-    for {
-      // checkFirtoolPath has both recoverable and unrecoverable errors
-      // First <- does not have .left projection so that unrecoverable errors short-circuit
-      res <- checkFirtoolPath(logger)
-      // Left projections allow us to short-circuit on any Right, and otherwise aggregate errors
-      // returned in Left
-      msg1 <- res.left
-      msg2 <- checkResources(None, logger).left
-      msg3 <- checkInstalled(logger, defaultVersion).left
-      msg4 <- fetchArtifact(logger, defaultVersion).left
-    } yield {
-      List("Failed to fetch firtool:", msg1, msg2, msg3, msg4).mkString("\n")
+  def apply(
+      logger: Logger,
+      defaultVersion: String
+  ): Either[String, FirtoolBinary] = {
+    parseFirtoolSource(defaultVersion) match {
+      case Left(msg)                         => Left(msg)
+      case Right(RemoteBinary(version, url)) =>
+        logger.debug(s"Using explicitly requested firtool URL: $url")
+        resolveRemote(version, url, logger)
+      case Right(MavenVersion(version)) =>
+        for {
+          // checkFirtoolPath has both recoverable and unrecoverable errors
+          // First <- does not have .left projection so that unrecoverable errors short-circuit
+          res <- checkFirtoolPath(logger)
+          // Left projections allow us to short-circuit on any Right, and otherwise aggregate errors
+          // returned in Left
+          msg1 <- res.left
+          msg2 <- checkResources(None, logger).left
+          msg3 <- checkInstalled(logger, version).left
+          msg4 <- fetchArtifact(logger, version).left
+        } yield {
+          List("Failed to fetch firtool:", msg1, msg2, msg3, msg4).mkString(
+            "\n"
+          )
+        }
     }
   }
 }
 
-
 object Main extends App {
   def usageErr(): Nothing = {
-    System.err.println("USAGE: firtool-resolver [-v] <version>")
+    System.err.println("USAGE: firtool-resolver [-v] <version>[@<url>]")
     sys.exit(1)
   }
   // Trying to avoid argument parser dependency if possible, just contributes to dependency hell
@@ -318,7 +488,7 @@ object Main extends App {
     }
   Resolve(version, verbose = verbose) match {
     case Right(bin) => println(bin.path)
-    case Left(err) =>
+    case Left(err)  =>
       System.err.println(err)
       sys.exit(1)
   }

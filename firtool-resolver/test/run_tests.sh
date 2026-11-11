@@ -55,3 +55,8 @@ else
 fi
 rm -rf $cache
 CHISEL_FIRTOOL_CACHE=$cache $THIS_DIR/firtool_cache.sh 2>&1 | FileCheck -DLLVM_FIRTOOL_VERSION="$LLVM_FIRTOOL_VERSION" -DFIRTOOL_VERSION="$FIRTOOL_VERSION" -DCHISEL_FIRTOOL_CACHE="$filecheck_cache" $THIS_DIR/firtool_cache.sh
+
+if [[ "$OS" == "linux" ]]; then
+  URL_TEST_OUTPUT=$($THIS_DIR/url_source.sh 2>&1)
+  printf '%s\n' "$URL_TEST_OUTPUT" | FileCheck $THIS_DIR/url_source.sh
+fi

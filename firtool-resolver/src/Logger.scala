@@ -4,7 +4,8 @@ package firtoolresolver
 
 /** Minimal Logger API
   *
-  * Used by firtoolresolver for its own purposes, easy for downstream projects to shim
+  * Used by firtoolresolver for its own purposes, easy for downstream projects
+  * to shim
   */
 trait Logger {
   def error(msg: String): Unit
@@ -14,6 +15,7 @@ trait Logger {
   def trace(msg: String): Unit
 }
 object Logger {
+
   /** Print warning level and above to stderr */
   def warn: Logger = new Logger {
     def error(msg: String): Unit = Console.err.println(msg)
@@ -22,6 +24,7 @@ object Logger {
     def debug(msg: String): Unit = ()
     def trace(msg: String): Unit = ()
   }
+
   /** Print debug level and above to stderr */
   def debug: Logger = new Logger {
     def error(msg: String): Unit = Console.err.println(msg)
