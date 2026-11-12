@@ -247,13 +247,12 @@ object `llvm-firtool` extends JavaModule with ChipsAlliancePublishModule {
 // ******************** WARNING ********************
 // This is extremely manual and changing dependencies IN ANY WAY (including bumping version)
 // requires carefully checking the packages to shade and dynamic ivy deps in the outer project
-object `firtool-resolver` extends Cross[FirtoolResolver]("2.13", "2.12")
+object `firtool-resolver` extends Cross[FirtoolResolver]("2.13")
 trait FirtoolResolver extends CrossScalaModule with ChipsAlliancePublishModule {
   root =>
 
   override def crossScalaVersion = Map(
-    "2.13" -> "2.13.11",
-    "2.12" -> "2.12.18"
+    "2.13" -> "2.13.11"
   )(crossValue)
 
   def scalacOptions = Seq("-deprecation", "-feature", "-release:8")
@@ -265,10 +264,10 @@ trait FirtoolResolver extends CrossScalaModule with ChipsAlliancePublishModule {
 
   def pomSettings = PomSettings(
     description = "Fetcher for native firtool binary",
-    organization = "org.chipsalliance",
-    url = "https://chipsalliance.org",
+    organization = "cc.xiangshan",
+    url = "https://github.com/OpenXiangShan/firtool-resolver",
     licenses = Seq(License.`Apache-2.0`),
-    versionControl = VersionControl.github("chipsalliance", "llvm-firtool"),
+    versionControl = VersionControl.github("OpenXiangShan", "firtool-resolver"),
     developers = Seq(
       Developer("jackkoenig", "Jack Koenig", "https://github.com/jackkoenig")
     )

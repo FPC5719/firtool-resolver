@@ -2,7 +2,7 @@
 
 FIRTOOL=$(
 cs launch --scala $SCALA_VERSION \
-  org.chipsalliance::firtool-resolver:$FIRTOOL_RESOLVER_VERSION \
+  cc.xiangshan::firtool-resolver:$FIRTOOL_RESOLVER_VERSION \
   --main firtoolresolver.Main \
   -- \
   -v \

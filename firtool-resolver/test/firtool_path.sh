@@ -3,7 +3,7 @@
 # From a previous test
 FIRTOOL_BIN=$(
 cs launch --scala $SCALA_VERSION \
-  org.chipsalliance::firtool-resolver:$FIRTOOL_RESOLVER_VERSION \
+  cc.xiangshan::firtool-resolver:$FIRTOOL_RESOLVER_VERSION \
   org.chipsalliance:llvm-firtool:$LLVM_FIRTOOL_VERSION \
   --main firtoolresolver.Main \
   -- \
@@ -13,7 +13,7 @@ export CHISEL_FIRTOOL_PATH=$(dirname $FIRTOOL_BIN)
 
 FIRTOOL=$(
 cs launch --scala $SCALA_VERSION \
-  org.chipsalliance::firtool-resolver:$FIRTOOL_RESOLVER_VERSION \
+  cc.xiangshan::firtool-resolver:$FIRTOOL_RESOLVER_VERSION \
   --main firtoolresolver.Main \
   -- \
   -v \
@@ -31,7 +31,7 @@ $FIRTOOL --version
 mv $FIRTOOL_BIN ${FIRTOOL_BIN}_renamed
 
 cs launch --scala $SCALA_VERSION \
-  org.chipsalliance::firtool-resolver:$FIRTOOL_RESOLVER_VERSION \
+  cc.xiangshan::firtool-resolver:$FIRTOOL_RESOLVER_VERSION \
   --main firtoolresolver.Main \
   -- \
   -v \

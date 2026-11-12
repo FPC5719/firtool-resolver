@@ -39,7 +39,7 @@ SPEC="$VERSION@http://127.0.0.1:$PORT/download"
 
 resolve() {
   cs launch --scala "$SCALA_VERSION" \
-    "org.chipsalliance::firtool-resolver:$FIRTOOL_RESOLVER_VERSION" \
+    "cc.xiangshan::firtool-resolver:$FIRTOOL_RESOLVER_VERSION" \
     --main firtoolresolver.Main \
     -- \
     -v \
